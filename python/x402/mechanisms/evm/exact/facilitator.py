@@ -34,10 +34,12 @@ from ..exact.eip3009_utils import (
     diagnose_eip3009_simulation_failure,
     execute_transfer_with_authorization,
     parse_eip3009_authorization,
+    parse_eip3009_transfer_error,
     simulate_eip3009_transfer,
 )
+from ..exact.permit2_utils import settle_permit2, verify_permit2
 from ..signer import FacilitatorEvmSigner
-from ..types import ERC6492SignatureData, ExactEIP3009Payload
+from ..types import ERC6492SignatureData, ExactEIP3009Payload, is_permit2_payload
 from ..utils import bytes_to_hex, get_evm_chain_id, hex_to_bytes, normalize_address
 
 
@@ -107,6 +109,8 @@ class ExactEvmScheme:
         requirements: PaymentRequirements,
         context=None,
     ) -> VerifyResponse:
+        if is_permit2_payload(payload.payload):
+            return verify_permit2(self._signer, payload, requirements, context)
         return self._verify(payload, requirements, simulate=True)
 
     def _verify(
@@ -271,8 +275,10 @@ class ExactEvmScheme:
         requirements: PaymentRequirements,
         context=None,
     ) -> SettleResponse:
-        """Settle EIP-3009 payment on-chain.
+        """Settle payment on-chain.
 
+        Routes to Permit2 or EIP-3009 settlement based on payload type.
+        For EIP-3009:
         - Re-verifies payment
         - Deploys smart wallet if configured and needed (ERC-6492)
         - Calls transferWithAuthorization (v,r,s or bytes overload)
@@ -285,6 +291,9 @@ class ExactEvmScheme:
         Returns:
             SettleResponse with success, transaction, and payer.
         """
+        if is_permit2_payload(payload.payload):
+            return settle_permit2(self._signer, payload, requirements, context)
+
         # First verify
         verify_result = self._verify(
             payload,
@@ -371,7 +380,7 @@ class ExactEvmScheme:
         except Exception as e:
             return SettleResponse(
                 success=False,
-                error_reason=ERR_TRANSACTION_FAILED,
+                error_reason=parse_eip3009_transfer_error(e),
                 error_message=str(e),
                 network=network,
                 payer=payer,
